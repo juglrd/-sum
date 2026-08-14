@@ -1,0 +1,37 @@
+name: Fix site moderator controls
+
+on:
+  push:
+    paths-ignore:
+      - '.github/workflows/fix-site.yml'
+      - '.github/workflows/site-fix-trigger.txt'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fix moderator API endpoint and requests
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('index.html')
+          s = p.read_text()
+          s = s.replace("const API_URL='https://script.google.com/macros/s/AKfycbwb198g_haQnVw0zbrXGdJH1T5hNGF1WewtoeQTEZ65pq5AL4LHZ8csh1FfckHdhFmY/exec';", "const API_URL='https://script.google.com/macros/s/AKfycbxJSnZhL0TkwhDjLGvx6eRQbFVSW1VcqBwQIJyqLHwPDBclKBA23m7CFy0EyZG_W-7c/exec';")
+          old = "async function post(data){const body=new URLSearchParams(data);await fetch(API_URL,{method:'POST',mode:'no-cors',body});await new Promise(r=>setTimeout(r,700));await refreshState()}"
+          new = "async function post(data){if(data.action==='setCategory'||data.action==='setRound2'){const r=await jsonpAction(data);if(!r.ok)throw new Error(r.error||'Moderator action failed.');await refreshState();return r}const body=new URLSearchParams(data);await fetch(API_URL,{method:'POST',mode:'no-cors',body});await new Promise(r=>setTimeout(r,700));await refreshState()}\nfunction jsonpAction(data){return new Promise((resolve,reject)=>{const cb='sum_action_'+Date.now()+'_'+Math.random().toString(36).slice(2),sc=document.createElement('script');let done=false;const finish=(fn,v)=>{if(done)return;done=true;delete window[cb];sc.remove();fn(v)};const timer=setTimeout(()=>finish(reject,new Error('Backend timed out.')),10000);window[cb]=v=>{clearTimeout(timer);finish(resolve,v)};const q=new URLSearchParams({...data,callback:cb,_:Date.now()});sc.src=API_URL+'?'+q.toString();sc.onerror=()=>{clearTimeout(timer);finish(reject,new Error('Could not reach Apps Script.'))};document.body.appendChild(sc)})}"
+          if old not in s:
+              raise SystemExit('Expected post() function not found')
+          s = s.replace(old, new)
+          p.write_text(s)
+          PY
+      - name: Commit fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html
+          git diff --cached --quiet || git commit -m 'Fix moderator category controls'
+          git push
