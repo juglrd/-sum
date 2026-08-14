@@ -2,6 +2,7 @@ const PROPS = PropertiesService.getScriptProperties();
 const STATE_KEY = 'SUM_OSCARS_STATE';
 const NOMINATIONS_KEY = 'SUM_OSCARS_NOMINATIONS';
 const ADMIN_PASSWORD_KEY = 'ADMIN_PASSWORD';
+const DISCORD_WEBHOOK_KEY = 'DISCORD_WEBHOOK_URL';
 const CATEGORIES = ['Most Valuable Member','Most Loyal Member','Most Funniest Member','Best Staff Member','Biggest Crashout','Best Duo','Best Profile','Best Friendgroup','Best Hater','Best Ragebaiter','Most Annoying','Best Looking Male','Best Looking Female'];
 
 function defaultState_() {
@@ -28,9 +29,33 @@ function output_(value) { return ContentService.createTextOutput(JSON.stringify(
 function outputJsonp_(value, callback) { var cb = String(callback || 'callback').replace(/[^a-zA-Z0-9_.$]/g,''); return ContentService.createTextOutput(cb+'('+JSON.stringify(value)+')').setMimeType(ContentService.MimeType.JAVASCRIPT); }
 
 function doGet(e) {
-  const state = getState_();
-  const result = {ok:true,categories:state.categories,round2:state.round2,round2Data:state.round2Data};
-  return e && e.parameter && e.parameter.callback ? outputJsonp_(result,e.parameter.callback) : output_(result);
+  try {
+    const p = (e && e.parameter) || {};
+    const action = String(p.action || '');
+
+    // GET is used for moderator controls because the browser cannot read a
+    // normal Apps Script POST response when the request is cross-origin/no-cors.
+    if (action === 'setCategory' || action === 'setRound2') {
+      requireAdmin_(p.password);
+      const state = getState_();
+      if (action === 'setCategory') {
+        const category = String(p.category || '');
+        if (CATEGORIES.indexOf(category) < 0) throw new Error('Unknown category.');
+        state.categories[category].open = String(p.open) === 'true';
+      } else {
+        state.round2 = String(p.open) === 'true';
+      }
+      saveState_(state);
+      return outputJsonp_({ok:true,categories:state.categories,round2:state.round2,round2Data:state.round2Data}, p.callback);
+    }
+
+    const state = getState_();
+    const result = {ok:true,categories:state.categories,round2:state.round2,round2Data:state.round2Data};
+    return p.callback ? outputJsonp_(result,p.callback) : output_(result);
+  } catch (err) {
+    const result = {ok:false,error:String(err.message || err)};
+    return e && e.parameter && e.parameter.callback ? outputJsonp_(result,e.parameter.callback) : output_(result);
+  }
 }
 
 function requireAdmin_(password) {
@@ -87,10 +112,51 @@ function submit_(p) {
   lock.waitLock(10000);
   try {
     const nominations = getNominations_();
-    nominations.push({id:Utilities.getUuid(),submitter:submitter,data:data,time:new Date().toISOString()});
+    const nomination = {id:Utilities.getUuid(),submitter:submitter,data:data,time:new Date().toISOString()};
+    nominations.push(nomination);
     PROPS.setProperty(NOMINATIONS_KEY,JSON.stringify(nominations));
+    sendDiscordWebhook_(nomination);
   } finally { lock.releaseLock(); }
   return output_({ok:true});
+}
+
+function sendDiscordWebhook_(nomination) {
+  const webhook = PROPS.getProperty(DISCORD_WEBHOOK_KEY);
+  if (!webhook) return;
+
+  const fields = [];
+  CATEGORIES.forEach(function(category) {
+    const value = nomination.data[category];
+    if (Array.isArray(value)) {
+      const clean = value.map(function(v){ return String(v || '').trim(); }).filter(Boolean).join(' + ');
+      if (clean) fields.push({name:category,value:clean,inline:false});
+    } else if (String(value || '').trim()) {
+      fields.push({name:category,value:String(value).trim(),inline:false});
+    }
+  });
+
+  const payload = {
+    username:'/SUM OSCARS',
+    embeds:[{
+      title:'New /SUM OSCARS Nomination',
+      description:'A new nomination submission was received.',
+      color:14121538,
+      fields:[{name:'Submitted by',value:nomination.submitter,inline:true}].concat(fields),
+      footer:{text:'Round One Nominations'},
+      timestamp:nomination.time
+    }]
+  };
+
+  try {
+    UrlFetchApp.fetch(webhook, {
+      method:'post',
+      contentType:'application/json',
+      payload:JSON.stringify(payload),
+      muteHttpExceptions:true
+    });
+  } catch (err) {
+    console.log('Discord webhook failed: '+err.message);
+  }
 }
 
 function getNominations_() {
