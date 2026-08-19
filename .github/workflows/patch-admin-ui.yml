@@ -1,0 +1,61 @@
+name: Patch SUM admin UI
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[admin-ui-patched]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch backend and frontend
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          # Backend: persist a shared nomination deadline and expose admin actions.
+          p = Path('apps-script/Code.gs')
+          s = p.read_text()
+          if "timerEnd:'2026-08-21T23:59:59+01:00'" not in s:
+              s = s.replace("round2Data:[]}", "round2Data:[],timerEnd:'2026-08-21T23:59:59+01:00'}")
+          s = s.replace("s.round2Data=Array.isArray(s.round2Data)?s.round2Data:[];return s}", "s.round2Data=Array.isArray(s.round2Data)?s.round2Data:[];s.timerEnd=s.timerEnd||'2026-08-21T23:59:59+01:00';return s}")
+          s = s.replace("round2Results:s.round2Closed?s.round2Results:[]}", "round2Results:s.round2Closed?s.round2Results:[],timerEnd:s.timerEnd}")
+          marker="else if(a==='setTimer'){const v=String(p.timerEnd||'').trim();if(!v)throw new Error('Timer date/time is required.');if(isNaN(new Date(v).getTime()))throw new Error('Invalid timer date/time.');s.timerEnd=v}"
+          anchor="else if(a==='setFinalists')"
+          if "a==='setTimer'" not in s:
+              s=s.replace(anchor, marker+anchor)
+          p.write_text(s)
+
+          # Frontend: add admin controls without replacing the existing design.
+          p = Path('index.html')
+          s = p.read_text()
+          if '<!-- SUM ADMIN PATCH V1 -->' not in s:
+              s=s.replace("const target=new Date('2026-08-21T23:59:59+01:00');", "let target=new Date('2026-08-21T23:59:59+01:00');")
+              patch=r'''<!-- SUM ADMIN PATCH V1 --><script>
+              const _origShowApplication=window.showApplication;
+              async function _adminApps(){const r=await api('getNominations',{password:modPassword});return r.nominations||[]}
+              async function deleteApplication(id){if(!confirm('Delete this application permanently?'))return;const r=await api('deleteApplication',{password:modPassword,id});if(!r.ok)return toast(r.error||'Could not delete application.');toast('Application deleted ✓');renderAdmin(await _adminApps())}
+              async function manualWinner(category,name){if(!name)return toast('Choose a winner.');const r=await api('manualWinner',{password:modPassword,category,name});if(!r.ok)return toast(r.error||'Could not select winner.');state=r;render();renderAdmin(await _adminApps());toast('Manual winner selected ✓')}
+              async function saveTimer(){const v=document.getElementById('timerEdit')?.value;if(!v)return toast('Choose a date and time.');const iso=new Date(v).toISOString();const r=await api('setTimer',{password:modPassword,timerEnd:iso});if(!r.ok)return toast(r.error||'Could not update timer.');state=r;target=new Date(r.timerEnd);tick();renderAdmin(await _adminApps());toast('Timer updated ✓')}
+              function renderAdmin(n){
+                document.getElementById('apps').innerHTML='<div class="modcard"><strong>'+n.length+' nominations submitted</strong><p class="hint">Click an applicant to inspect their saved application.</p>'+n.map(x=>'<div style="display:flex;gap:7px;flex-wrap:wrap;margin:7px 0"><button class="btn" onclick=\'showApplication('+JSON.stringify(x)+')\'>'+esc(x.submitter)+'</button><button class="btn" onclick=\'deleteApplication("'+esc(x.id)+'")\'>Delete</button></div>').join('')+'</div>';
+                const rule=state.round2Rule||'any',closed=state.round2Closed&&!state.round2;
+                let results=(state.round2Results||[]).map(x=>'<div class="result"><b>'+esc(x.category)+'</b><br><span class="winner">'+esc(x.status==='Winner'?x.winner:x.status==='Tie'?'Tie: '+(x.winners||[]).join(', '):'No winner')+'</span> · '+Number(x.votes||0)+' votes</div>').join('');
+                let manual=C.map(c=>{const f=state.categories[c]?.finalists||[];return f.length?'<div class="field"><label>'+esc(c)+'</label><select id="winner_'+C.indexOf(c)+'"><option value="">Manual winner…</option>'+f.map(x=>'<option value="'+esc(x.name)+'">'+esc(x.name)+' ('+Number(x.votes||0)+' votes)</option>').join('')+'</select><button class="btn" onclick="manualWinner('+JSON.stringify(c)+',document.getElementById(\'winner_'+C.indexOf(c)+'\').value)">Select Winner</button></div>':''}).join('');
+                const localTimer=state.timerEnd?new Date(state.timerEnd):target;
+                const localValue=new Date(localTimer.getTime()-localTimer.getTimezoneOffset()*60000).toISOString().slice(0,16);
+                document.getElementById('controls').innerHTML='<div class="modcard"><strong>Category controls</strong>'+C.map(c=>'<div class="field"><label>'+esc(c)+'</label><button class="btn '+(state.categories[c]?.open?'primary':'')+'" onclick="setCategory('+JSON.stringify(c)+','+(!state.categories[c]?.open)+')">'+(state.categories[c]?.open?'Close':'Open')+'</button></div>').join('')+'</div><div class="modcard"><strong>Round 2</strong><p class="hint">Most votes wins. You can also manually choose a winner. Closing Round 2 locks all voting.</p><button class="btn primary" onclick="setRound2(true)">Open Round 2</button> <button class="btn" onclick="setRound2(false)">Close Round 2</button><div class="notice '+(state.round2?'success':'')+'" style="margin-top:15px">'+(state.round2?'🟢 OPEN — voting is live.':'🔴 CLOSED — voting is locked.')+'</div>'+manual+(results?'<strong>Results</strong>'+results:'')+'</div><div class="modcard"><strong>Countdown Timer</strong><p class="hint">Set the exact date and time the public countdown should reach zero.</p><input id="timerEdit" type="datetime-local" value="'+localValue+'"><button class="btn primary" onclick="saveTimer()">Save Timer</button></div>';
+              }
+              </script>'''
+              s=s.replace('</script></body></html>', patch+'</script></body></html>')
+          p.write_text(s)
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html apps-script/Code.gs
+          git diff --cached --quiet || git commit -m "Add admin controls for winners, applications and timer [admin-ui-patched]"
+          git push
