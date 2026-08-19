@@ -1,0 +1,37 @@
+name: Patch Round 2 UI
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-round2.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch Round 2 moderator UI
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('index.html')
+          s=p.read_text()
+          start=s.find('function renderAdmin(n){')
+          end=s.find('async function setCategory', start)
+          if start<0 or end<0:
+              raise SystemExit('Could not find moderator render block')
+          new=r'''function nomineeOptions(n,category){const out=[];const seen=new Set();(n||[]).forEach(a=>{const v=a?.data?.[category];const vals=Array.isArray(v)?[v.join(' + ')]:[v];vals.forEach(x=>{x=String(x||'').trim();if(!x)return;const k=x.toLowerCase();if(!seen.has(k)){seen.add(k);out.push(x)}})});return out}function renderAdmin(n){const apps=n||[];document.getElementById('apps').innerHTML='<div class="modcard"><strong>'+apps.length+' nominations submitted</strong><p class="hint">Open an applicant to inspect their saved application, or delete it.</p>'+apps.map(x=>'<div style="display:flex;gap:7px;flex-wrap:wrap;margin:7px 0"><button class="btn" onclick=\'showApplication('+JSON.stringify(x)+')\'>'+esc(x.submitter)+'</button><button class="btn" onclick=\'deleteApplication("'+esc(x.id)+'")\'>Delete</button></div>').join('')+'</div>';let html='<div class="modcard"><strong>Round 2 finalists</strong><p class="hint">Choose exactly 4 people from the submitted applications for each category. These are the only people who can be voted for in Round 2.</p>';C.forEach(c=>{const opts=nomineeOptions(apps,c),f=state.categories[c]?.finalists||[];html+='<div class="field"><label>'+esc(c)+'</label>'+[0,1,2,3].map(i=>'<select id="fin_'+C.indexOf(c)+'_'+i+'"><option value="">Finalist '+(i+1)+'…</option>'+opts.map(x=>'<option value="'+esc(x)+'" '+(f[i]&&String(f[i].name).toLowerCase()===x.toLowerCase()?'selected':'')+'>'+esc(x)+'</option>').join('')+'</select>').join(' ')+'<button class="btn" onclick="saveFinalists('+JSON.stringify(c)+')">Save 4 Finalists</button></div>'});html+='</div>';const results=(state.round2Results||[]).map(x=>'<div class="result"><b>'+esc(x.category)+'</b><br><span class="winner">'+esc(x.status==='Winner'?x.winner:x.status==='Tie'?'Tie: '+(x.winners||[]).join(', '):'No winner')+'</span> · '+Number(x.votes||0)+' votes</div>').join('');html+='<div class="modcard"><strong>Round 2 controls</strong><p class="hint">Open voting after you have selected finalists. Closing voting freezes the vote totals. Votes inform your decision; you manually choose the winner.</p><button class="btn primary" onclick="setRound2(true)">Open Round 2</button> <button class="btn" onclick="setRound2(false)">Close Round 2</button><div class="notice '+(state.round2?'success':'')+'" style="margin-top:15px">'+(state.round2?'🟢 OPEN — voting is live.':'🔴 CLOSED — voting is locked.')+'</div>'+results+'</div>';const localTimer=state.timerEnd?new Date(state.timerEnd):target,localValue=new Date(localTimer.getTime()-localTimer.getTimezoneOffset()*60000).toISOString().slice(0,16);html+='<div class="modcard"><strong>Countdown Timer</strong><p class="hint">Set the exact date and time the public countdown should reach zero.</p><input id="timerEdit" type="datetime-local" value="'+localValue+'"><button class="btn primary" onclick="saveTimer()">Save Timer</button></div>';document.getElementById('controls').innerHTML=html}async function saveFinalists(category){const ids=C.indexOf(category),vals=[0,1,2,3].map(i=>document.getElementById('fin_'+ids+'_'+i).value.trim());if(vals.some(v=>!v))return toast('Choose all 4 finalists.');if(new Set(vals.map(v=>v.toLowerCase())).size!==4)return toast('Each finalist must be different.');const data=vals.map(name=>({name,pic:'',votes:0})),r=await api('setFinalists',{password:modPassword,category,data:JSON.stringify(data)});if(!r.ok)return toast(r.error||'Could not save finalists.');state=r;render();renderAdmin(await _adminApps());toast('4 finalists saved ✓')}'''
+          s=s[:start]+new+s[end:]
+          s=re.sub(r'<!-- SUM ADMIN PATCH V1 -->.*?</script>\s*</script>\s*</body>', '</script></body>', s, flags=re.S)
+          p.write_text(s)
+          PY
+      - name: Commit patched index
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add index.html
+          git diff --cached --quiet && exit 0
+          git commit -m "Restore application-based Round 2 finalist selection"
+          git push
