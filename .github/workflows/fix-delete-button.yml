@@ -1,0 +1,43 @@
+name: Fix delete button
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch delete handler
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('index.html')
+          s = p.read_text(encoding='utf-8')
+          marker = '/* SUM_DELETE_HANDLER_V2 */'
+          if marker in s:
+              print('Delete handler already patched')
+              raise SystemExit(0)
+          needle = 'async function login(){'
+          if needle not in s:
+              raise SystemExit('Could not find login handler in index.html')
+          fn = '''/* SUM_DELETE_HANDLER_V2 */ async function deleteApplication(id){\ntry{\nif(!modPassword)return toast('Unlock the moderator panel first.');\nconst cleanId=String(id||'').trim();\nif(!cleanId)return toast('Application ID is missing.');\nif(!confirm('Delete this application permanently?'))return;\nconst r=await api('deleteApplication',{password:modPassword,id:cleanId});\nif(!r.ok)throw new Error(r.error||'Could not delete application.');\nconst refreshed=await api('getNominations',{password:modPassword});\nif(!refreshed.ok)throw new Error(refreshed.error||'Application deleted, but the list could not refresh.');\nrenderAdmin(refreshed.nominations||[]);\ntoast('Application deleted ✓');\n}catch(e){toast(e.message||'Could not delete application.')}}\n'''
+          p.write_text(s.replace(needle, fn+needle, 1), encoding='utf-8')
+          PY
+
+      - name: Commit patch
+        run: |
+          if git diff --quiet -- index.html; then
+            echo 'No changes needed'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html
+          git commit -m 'Fix moderator application delete handler'
+          git push
