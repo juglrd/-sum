@@ -11,39 +11,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Patch Round 2 finalist saving
+      - name: Patch finalist input flow
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
-
-          # Backend: let the authenticated admin receive the saved finalists even while Round 2 is closed.
-          p=Path('apps-script/Code.gs')
-          s=p.read_text()
-          old="""saveState_(s);const r=publicState_(s);return p.callback?jsonp_(r,p.callback):out_(r)}catch(err)"""
-          new="""saveState_(s);const r=publicState_(s);if(a==='setFinalists'){CATEGORIES.forEach(n=>{r.categories[n].finalists=s.categories[n].finalists});}return p.callback?jsonp_(r,p.callback):out_(r)}catch(err)"""
-          if old not in s:
-              raise SystemExit('Could not find backend response block')
-          s=s.replace(old,new,1)
-          p.write_text(s)
-
-          # Frontend: ensure Save 4 Finalists sends exactly four unique finalists and keeps them after save.
-          p=Path('index.html')
-          s=p.read_text()
-          start=s.find('function nomineeOptions(n,category){')
-          end=s.find('async function setCategory', start)
-          if start<0 or end<0:
-              raise SystemExit('Could not find moderator finalist block')
+          p=Path('index.html'); s=p.read_text()
+          start=s.find('function nomineeOptions(n,category){'); end=s.find('async function setCategory',start)
+          if start<0 or end<0: raise SystemExit('Could not find finalist UI block')
           block=s[start:end]
-          block=re.sub(r"async function saveFinalists\(category\).*?toast\('4 finalists saved ✓'\)\}", """async function saveFinalists(category){const ids=C.indexOf(category),vals=[0,1,2,3].map(i=>String(document.getElementById('fin_'+ids+'_'+i)?.value||'').trim());if(vals.some(v=>!v))return toast('Choose all 4 finalists.');if(new Set(vals.map(v=>v.toLowerCase())).size!==4)return toast('Each finalist must be different.');const data=vals.map(name=>({name,pic:'',votes:0}));const r=await api('setFinalists',{password:modPassword,category,data:JSON.stringify(data)});if(!r||!r.ok)return toast((r&&r.error)||'Could not save finalists.');if(r.categories&&r.categories[category])state=r;else{state.categories[category].finalists=data;}render();renderAdmin(await _adminApps());toast('4 finalists saved ✓')}""", block, flags=re.S)
-          s=s[:start]+block+s[end:]
-          p.write_text(s)
+          block=re.sub(r"function nomineeOptions\(n,category\)\{.*?\}\s*function renderAdmin", """function nomineeOptions(n,category){const out=[];const seen=new Set();(n||[]).forEach(a=>{const v=a?.data?.[category];const vals=Array.isArray(v)?v:[v];vals.forEach(x=>{x=String(x||'').trim();if(x&&!seen.has(x.toLowerCase())){seen.add(x.toLowerCase());out.push(x)}})});return out}function renderAdmin""", block, flags=re.S)
+          block=re.sub(r"html\+='</div>';const results", """html+='</div><div class=\"modcard\"><strong>Add finalist manually</strong><p class=\"hint\">Type a name to add a finalist even if they do not appear in the submitted applications.</p><input id=\"manualFinalist\" placeholder=\"Discord username\"><button class=\"btn\" onclick=\"addManualFinalist()\">Add Name</button></div>';const results""", block)
+          block += """async function addManualFinalist(){const el=document.getElementById('manualFinalist');const name=String(el?.value||'').trim();if(!name)return toast('Enter a name.');const category=prompt('Which category should '+name+' be added to?');if(!category||!C.includes(category))return toast('Enter an exact category name.');const current=(state.categories[category]?.finalists||[]).map(x=>x.name);if(current.some(x=>x.toLowerCase()===name.toLowerCase()))return toast('That finalist is already selected.');if(current.length>=4)return toast('That category already has 4 finalists.');current.push(name);const data=current.map(x=>({name:x,pic:'',votes:0}));const r=await api('setFinalists',{password:modPassword,category,data:JSON.stringify(data)});if(!r?.ok)return toast(r?.error||'Could not save finalist.');state.categories[category].finalists=data;render();renderAdmin(await _adminApps());el.value='';toast('Finalist added ✓')}"""
+          s=s[:start]+block+s[end:]; p.write_text(s)
           PY
-      - name: Commit patched files
+      - name: Commit
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add index.html apps-script/Code.gs
+          git add index.html
           git diff --cached --quiet && exit 0
-          git commit -m "Fix Save 4 Finalists persistence"
+          git commit -m "Allow manually adding Round 2 finalists"
           git push
