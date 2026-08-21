@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Patch finalist input flow
+      - name: Patch Round 2 finalist editor
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -20,10 +20,17 @@ jobs:
           start=s.find('function nomineeOptions(n,category){'); end=s.find('async function setCategory',start)
           if start<0 or end<0: raise SystemExit('Could not find finalist UI block')
           block=s[start:end]
-          block=re.sub(r"function nomineeOptions\(n,category\)\{.*?\}\s*function renderAdmin", """function nomineeOptions(n,category){const out=[];const seen=new Set();(n||[]).forEach(a=>{const v=a?.data?.[category];const vals=Array.isArray(v)?v:[v];vals.forEach(x=>{x=String(x||'').trim();if(x&&!seen.has(x.toLowerCase())){seen.add(x.toLowerCase());out.push(x)}})});return out}function renderAdmin""", block, flags=re.S)
-          block=re.sub(r"html\+='</div>';const results", """html+='</div><div class=\"modcard\"><strong>Add finalist manually</strong><p class=\"hint\">Type a name to add a finalist even if they do not appear in the submitted applications.</p><input id=\"manualFinalist\" placeholder=\"Discord username\"><button class=\"btn\" onclick=\"addManualFinalist()\">Add Name</button></div>';const results""", block)
-          block += """async function addManualFinalist(){const el=document.getElementById('manualFinalist');const name=String(el?.value||'').trim();if(!name)return toast('Enter a name.');const category=prompt('Which category should '+name+' be added to?');if(!category||!C.includes(category))return toast('Enter an exact category name.');const current=(state.categories[category]?.finalists||[]).map(x=>x.name);if(current.some(x=>x.toLowerCase()===name.toLowerCase()))return toast('That finalist is already selected.');if(current.length>=4)return toast('That category already has 4 finalists.');current.push(name);const data=current.map(x=>({name:x,pic:'',votes:0}));const r=await api('setFinalists',{password:modPassword,category,data:JSON.stringify(data)});if(!r?.ok)return toast(r?.error||'Could not save finalist.');state.categories[category].finalists=data;render();renderAdmin(await _adminApps());el.value='';toast('Finalist added ✓')}"""
-          s=s[:start]+block+s[end:]; p.write_text(s)
+          # Replace the fragile prompt-based manual editor with an explicit category editor.
+          old=r"async function addManualFinalist\(\).*?(?=async function setCategory|$)"
+          new="""function round2Editor(category,nominations){const current=(state.categories[category]?.finalists||[]).map(x=>x.name);const opts=nomineeOptions(nominations,category);let h='<div class=\\\"modcard\\\"><div class=\\\"modrow\\\"><strong>'+category+'</strong><span class=\\\"hint\\\">'+current.length+'/4 saved</span></div>';for(let i=0;i<4;i++){const val=current[i]||'';h+='<input id=\\\"r2fin_'+C.indexOf(category)+'_'+i+'\\\" list=\\\"r2opts_'+C.indexOf(category)+'_'+i+'\\\" value=\\\"'+String(val).replace(/\\\"/g,'&quot;')+'\\\" placeholder=\\\"Finalist '+(i+1)+'\\\">';h+='<datalist id=\\\"r2opts_'+C.indexOf(category)+'_'+i+'\\\">'+opts.map(x=>'<option value=\\\"'+String(x).replace(/\\\"/g,'&quot;')+'\\\">').join('')+'</datalist>';}h+='<button class=\\\"btn primary\\\" onclick=\\\"saveRound2Finalists(\\\''+category.replace(/\\\'/g,"\\\\'")+\\\')\\\">Save 4 Finalists</button><button class=\\\"btn\\\" onclick=\\\"editRound2Finalists(\\\''+category.replace(/\\\'/g,"\\\\'")+\\\')\\\">Edit</button></div>';return h}
+          async function saveRound2Finalists(category){const i=C.indexOf(category);const vals=[0,1,2,3].map(n=>String(document.getElementById('r2fin_'+i+'_'+n)?.value||'').trim()).filter(Boolean);if(vals.length!==4)return toast('Enter all 4 finalists.');if(new Set(vals.map(x=>x.toLowerCase())).size!==4)return toast('Each finalist must be different.');const data=vals.map(name=>({name,pic:'',votes:0}));const r=await api('setFinalists',{password:modPassword,category,data:JSON.stringify(data)});if(!r?.ok)return toast(r?.error||'Could not save finalists.');state.categories[category].finalists=data;render();renderAdmin(await _adminApps());toast(category+' finalists saved ✓')}
+          function editRound2Finalists(category){const i=C.indexOf(category);for(let n=0;n<4;n++){const e=document.getElementById('r2fin_'+i+'_'+n);if(e){e.disabled=false;e.focus();}}toast('You can edit the 4 finalists now.')}"""
+          block=re.sub(old,new,block,flags=re.S)
+          # If the previous patch inserted a manual-finalist card, remove it; the new editor replaces it.
+          block=re.sub(r"<div class=\\\"modcard\\\"><strong>Add finalist manually</strong>.*?</div>","",block,flags=re.S)
+          # Add editor helper before admin category rendering if absent.
+          if 'round2Editor(category,nominations)' not in block: raise SystemExit('Editor injection failed')
+          s=s[:start]+block+s[end:];p.write_text(s)
           PY
       - name: Commit
         run: |
@@ -31,5 +38,5 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add index.html
           git diff --cached --quiet && exit 0
-          git commit -m "Allow manually adding Round 2 finalists"
+          git commit -m "Restore editable Round 2 finalist setup"
           git push
