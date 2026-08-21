@@ -11,63 +11,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Inject robust Round 2 finalist editor
+      - name: Inject standalone Round 2 finalist editor
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p=Path('index.html')
           s=p.read_text()
-          marker='<!-- ROUND2_EDITOR_PATCH -->'
+          marker='<!-- ROUND2_EDITOR_PATCH_V3 -->'
           if marker not in s:
-            patch=r'''<!-- ROUND2_EDITOR_PATCH --><script>
+            patch=r'''<!-- ROUND2_EDITOR_PATCH_V3 --><script>
 (function(){
-  function esc(v){return String(v||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-  function renderFinalistEditor(){
-    const controls=document.getElementById('controls');
-    if(!controls||document.getElementById('r2FinalistEditor')) return;
-    const card=document.createElement('div');card.id='r2FinalistEditor';card.className='modcard';
-    card.innerHTML='<div class="eyebrow">ROUND 2 FINALISTS</div><h3 style="margin:8px 0 14px">Select & Edit Final 4</h3><div class="field"><label>Category</label><select id="r2Category"></select></div><div id="r2Slots"></div><button class="btn primary" id="r2Save">Save 4 Finalists</button><p class="hint">You can type any name, edit saved names later, and then save again.</p>';
-    controls.prepend(card);
-    const sel=card.querySelector('#r2Category');
-    (window.C||[]).forEach(c=>sel.add(new Option(c,c)));
-    function candidates(category){
-      const out=[];const seen=new Set();
-      const apps=window.__sumAdminApps||[];
-      apps.forEach(a=>{const d=a&&a.data||a||{};let v=d[category];if(Array.isArray(v))v.forEach(x=>add(x));else add(v)});
-      function add(x){x=String(x||'').trim();if(x&&!seen.has(x.toLowerCase())){seen.add(x.toLowerCase());out.push(x)}}
-      return out;
-    }
-    function slots(){
-      const cat=sel.value;const saved=((((window.state||{}).categories||{})[cat]||{}).finalists||[]).map(x=>typeof x==='string'?x:(x.name||''));
-      const opts=candidates(cat);const box=card.querySelector('#r2Slots');box.innerHTML='';
-      for(let i=0;i<4;i++){
-        const row=document.createElement('div');row.className='field';
-        row.innerHTML='<label>Finalist '+(i+1)+'</label><input class="r2fin" list="r2list'+i+'" value="'+esc(saved[i]||'')+'" placeholder="Type a name or choose a nominee"><datalist id="r2list'+i+'">'+opts.map(x=>'<option value="'+esc(x)+'">').join('')+'</datalist>';
-        box.appendChild(row);
-      }
-    }
-    sel.addEventListener('change',slots);slots();
-    card.querySelector('#r2Save').onclick=async()=>{
-      const cat=sel.value;const vals=[...card.querySelectorAll('.r2fin')].map(x=>x.value.trim()).filter(Boolean);
-      if(vals.length!==4){window.toast&&toast('Enter all 4 finalists.');return}
-      if(new Set(vals.map(x=>x.toLowerCase())).size!==4){window.toast&&toast('Each finalist must be different.');return}
-      try{
-        const r=await window.api('setFinalists',{password:window.modPassword||'',category:cat,data:JSON.stringify(vals.map(name=>({name,pic:'',votes:0})))});
-        if(!r||!r.ok)throw new Error((r&&r.error)||'Could not save finalists.');
-        window.state=window.state||{categories:{}};window.state.categories=window.state.categories||{};window.state.categories[cat]=window.state.categories[cat]||{};
-        window.state.categories[cat].finalists=vals.map(name=>({name,pic:'',votes:0}));
-        window.toast&&toast(cat+' finalists saved ✓');slots();
-      }catch(e){window.toast&&toast(e.message||'Could not save finalists.')}
-    };
-  }
-  const obs=new MutationObserver(()=>{
-    const admin=document.getElementById('admin');
-    const controls=document.getElementById('controls');
-    if(admin&&admin.style.display!=='none'&&controls) setTimeout(renderFinalistEditor,0);
-  });
-  obs.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['style']});
-  window.addEventListener('load',()=>setTimeout(renderFinalistEditor,300));
-  window.__sumRound2SetApps=a=>{window.__sumAdminApps=Array.isArray(a)?a:[];renderFinalistEditor()};
+  const API_URL='https://script.google.com/macros/s/AKfycbzXQxKlvhDt1C0kNEGZNFOpzDjbU7JOLmun-w-fYDlJjexbqW9Yg5fMUt3ngs4bPOKl/exec';
+  const CATS=['Most Valuable Member','Most Loyal Member','Most Funniest Member','Best Staff Member','Biggest Crashout','Best Duo','Best Profile','Best Friendgroup','Best Hater','Best Ragebaiter','Most Annoying','Best Looking Male','Best Looking Female'];
+  function call(action,extra){return new Promise((resolve,reject)=>{const cb='r2cb'+Date.now()+Math.random().toString(36).slice(2),s=document.createElement('script');let done=false;const finish=(fn,v)=>{if(done)return;done=true;clearTimeout(t);delete window[cb];s.remove();fn(v)};window[cb]=v=>finish(resolve,v);s.onerror=()=>finish(reject,new Error('Backend connection failed.'));const t=setTimeout(()=>finish(reject,new Error('Backend timed out.')),12000);s.src=API_URL+'?'+new URLSearchParams({action,callback:cb,_:Date.now(),...(extra||{})});document.body.appendChild(s)})}
+  function toastMsg(t){if(typeof window.toast==='function')return window.toast(t);const x=document.getElementById('toast');if(x){x.textContent=t;x.classList.add('show');setTimeout(()=>x.classList.remove('show'),2600)}}
+  async function render(){const controls=document.getElementById('controls'),admin=document.getElementById('admin');if(!controls||!admin||admin.style.display==='none'||document.getElementById('r2FinalistEditorV3'))return;const pw=document.getElementById('pw')?.value||'';if(!pw)return;let st,noms=[];try{const [a,b]=await Promise.all([call('state'),call('getNominations',{password:pw})]);st=a;noms=b?.nominations||[]}catch{return}const card=document.createElement('div');card.id='r2FinalistEditorV3';card.className='modcard';card.innerHTML='<div class="eyebrow">ROUND 2 FINALISTS</div><h3 style="margin:8px 0 14px">Select & Edit Final 4</h3><div class="field"><label>Category</label><select id="r2v3cat"></select></div><div id="r2v3slots"></div><button class="btn primary" id="r2v3save">Save 4 Finalists</button><p class="hint">Type a name manually or choose a nominee. You can edit these four later and save again.</p>';controls.prepend(card);const cat=card.querySelector('#r2v3cat');CATS.forEach(c=>cat.add(new Option(c,c)));const opts=(c)=>{const out=[],seen=new Set();noms.forEach(a=>{let v=a?.data?.[c];(Array.isArray(v)?v:[v]).forEach(x=>{x=String(x||'').trim();if(x&&!seen.has(x.toLowerCase())){seen.add(x.toLowerCase());out.push(x)}})});return out};const slots=()=>{const c=cat.value,saved=st?.categories?.[c]?.finalists||[],box=card.querySelector('#r2v3slots'),o=opts(c);box.innerHTML='';for(let i=0;i<4;i++){const f=document.createElement('div');f.className='field';f.innerHTML='<label>Finalist '+(i+1)+'</label><input class="r2v3name" list="r2v3list'+i+'" placeholder="Type a name" value="'+String(saved[i]?.name||saved[i]||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'"><datalist id="r2v3list'+i+'">'+o.map(x=>'<option value="'+String(x).replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'">').join('')+'</datalist>';box.appendChild(f)}};cat.onchange=slots;slots();card.querySelector('#r2v3save').onclick=async()=>{const vals=[...card.querySelectorAll('.r2v3name')].map(x=>x.value.trim());if(vals.some(x=>!x))return toastMsg('Enter all 4 finalists.');if(new Set(vals.map(x=>x.toLowerCase())).size!==4)return toastMsg('Each finalist must be different.');try{const r=await call('setFinalists',{password:pw,category:cat.value,data:JSON.stringify(vals.map(name=>({name,pic:'',votes:0})))});if(!r?.ok)throw new Error(r?.error||'Could not save finalists.');st=r;toastMsg(cat.value+' finalists saved ✓');slots()}catch(e){toastMsg(e.message)}}};
+  const obs=new MutationObserver(()=>{if(document.getElementById('admin')?.style.display!=='none')setTimeout(render,100)});obs.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['style']});window.addEventListener('load',()=>setTimeout(render,800));
 })();
 </script>'''
             s=s.replace('</body>',patch+'</body>')
@@ -79,5 +38,5 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add index.html
           git diff --cached --quiet && exit 0
-          git commit -m "Add working editable Round 2 finalist editor"
+          git commit -m "Fix Round 2 finalist editor directly"
           git push
