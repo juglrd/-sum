@@ -1,4 +1,4 @@
-name: Patch Round 2 UI
+name: Repair Round 2 Finalist Editor
 on:
   push:
     paths:
@@ -11,32 +11,73 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Patch Round 2 finalist editor
+      - name: Inject robust Round 2 finalist editor
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re
-          p=Path('index.html'); s=p.read_text()
-          start=s.find('function nomineeOptions(n,category){'); end=s.find('async function setCategory',start)
-          if start<0 or end<0: raise SystemExit('Could not find finalist UI block')
-          block=s[start:end]
-          # Replace the fragile prompt-based manual editor with an explicit category editor.
-          old=r"async function addManualFinalist\(\).*?(?=async function setCategory|$)"
-          new="""function round2Editor(category,nominations){const current=(state.categories[category]?.finalists||[]).map(x=>x.name);const opts=nomineeOptions(nominations,category);let h='<div class=\\\"modcard\\\"><div class=\\\"modrow\\\"><strong>'+category+'</strong><span class=\\\"hint\\\">'+current.length+'/4 saved</span></div>';for(let i=0;i<4;i++){const val=current[i]||'';h+='<input id=\\\"r2fin_'+C.indexOf(category)+'_'+i+'\\\" list=\\\"r2opts_'+C.indexOf(category)+'_'+i+'\\\" value=\\\"'+String(val).replace(/\\\"/g,'&quot;')+'\\\" placeholder=\\\"Finalist '+(i+1)+'\\\">';h+='<datalist id=\\\"r2opts_'+C.indexOf(category)+'_'+i+'\\\">'+opts.map(x=>'<option value=\\\"'+String(x).replace(/\\\"/g,'&quot;')+'\\\">').join('')+'</datalist>';}h+='<button class=\\\"btn primary\\\" onclick=\\\"saveRound2Finalists(\\\''+category.replace(/\\\'/g,"\\\\'")+\\\')\\\">Save 4 Finalists</button><button class=\\\"btn\\\" onclick=\\\"editRound2Finalists(\\\''+category.replace(/\\\'/g,"\\\\'")+\\\')\\\">Edit</button></div>';return h}
-          async function saveRound2Finalists(category){const i=C.indexOf(category);const vals=[0,1,2,3].map(n=>String(document.getElementById('r2fin_'+i+'_'+n)?.value||'').trim()).filter(Boolean);if(vals.length!==4)return toast('Enter all 4 finalists.');if(new Set(vals.map(x=>x.toLowerCase())).size!==4)return toast('Each finalist must be different.');const data=vals.map(name=>({name,pic:'',votes:0}));const r=await api('setFinalists',{password:modPassword,category,data:JSON.stringify(data)});if(!r?.ok)return toast(r?.error||'Could not save finalists.');state.categories[category].finalists=data;render();renderAdmin(await _adminApps());toast(category+' finalists saved ✓')}
-          function editRound2Finalists(category){const i=C.indexOf(category);for(let n=0;n<4;n++){const e=document.getElementById('r2fin_'+i+'_'+n);if(e){e.disabled=false;e.focus();}}toast('You can edit the 4 finalists now.')}"""
-          block=re.sub(old,new,block,flags=re.S)
-          # If the previous patch inserted a manual-finalist card, remove it; the new editor replaces it.
-          block=re.sub(r"<div class=\\\"modcard\\\"><strong>Add finalist manually</strong>.*?</div>","",block,flags=re.S)
-          # Add editor helper before admin category rendering if absent.
-          if 'round2Editor(category,nominations)' not in block: raise SystemExit('Editor injection failed')
-          s=s[:start]+block+s[end:];p.write_text(s)
+          p=Path('index.html')
+          s=p.read_text()
+          marker='<!-- ROUND2_EDITOR_PATCH -->'
+          if marker not in s:
+            patch=r'''<!-- ROUND2_EDITOR_PATCH --><script>
+(function(){
+  function esc(v){return String(v||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+  function renderFinalistEditor(){
+    const controls=document.getElementById('controls');
+    if(!controls||document.getElementById('r2FinalistEditor')) return;
+    const card=document.createElement('div');card.id='r2FinalistEditor';card.className='modcard';
+    card.innerHTML='<div class="eyebrow">ROUND 2 FINALISTS</div><h3 style="margin:8px 0 14px">Select & Edit Final 4</h3><div class="field"><label>Category</label><select id="r2Category"></select></div><div id="r2Slots"></div><button class="btn primary" id="r2Save">Save 4 Finalists</button><p class="hint">You can type any name, edit saved names later, and then save again.</p>';
+    controls.prepend(card);
+    const sel=card.querySelector('#r2Category');
+    (window.C||[]).forEach(c=>sel.add(new Option(c,c)));
+    function candidates(category){
+      const out=[];const seen=new Set();
+      const apps=window.__sumAdminApps||[];
+      apps.forEach(a=>{const d=a&&a.data||a||{};let v=d[category];if(Array.isArray(v))v.forEach(x=>add(x));else add(v)});
+      function add(x){x=String(x||'').trim();if(x&&!seen.has(x.toLowerCase())){seen.add(x.toLowerCase());out.push(x)}}
+      return out;
+    }
+    function slots(){
+      const cat=sel.value;const saved=((((window.state||{}).categories||{})[cat]||{}).finalists||[]).map(x=>typeof x==='string'?x:(x.name||''));
+      const opts=candidates(cat);const box=card.querySelector('#r2Slots');box.innerHTML='';
+      for(let i=0;i<4;i++){
+        const row=document.createElement('div');row.className='field';
+        row.innerHTML='<label>Finalist '+(i+1)+'</label><input class="r2fin" list="r2list'+i+'" value="'+esc(saved[i]||'')+'" placeholder="Type a name or choose a nominee"><datalist id="r2list'+i+'">'+opts.map(x=>'<option value="'+esc(x)+'">').join('')+'</datalist>';
+        box.appendChild(row);
+      }
+    }
+    sel.addEventListener('change',slots);slots();
+    card.querySelector('#r2Save').onclick=async()=>{
+      const cat=sel.value;const vals=[...card.querySelectorAll('.r2fin')].map(x=>x.value.trim()).filter(Boolean);
+      if(vals.length!==4){window.toast&&toast('Enter all 4 finalists.');return}
+      if(new Set(vals.map(x=>x.toLowerCase())).size!==4){window.toast&&toast('Each finalist must be different.');return}
+      try{
+        const r=await window.api('setFinalists',{password:window.modPassword||'',category:cat,data:JSON.stringify(vals.map(name=>({name,pic:'',votes:0})))});
+        if(!r||!r.ok)throw new Error((r&&r.error)||'Could not save finalists.');
+        window.state=window.state||{categories:{}};window.state.categories=window.state.categories||{};window.state.categories[cat]=window.state.categories[cat]||{};
+        window.state.categories[cat].finalists=vals.map(name=>({name,pic:'',votes:0}));
+        window.toast&&toast(cat+' finalists saved ✓');slots();
+      }catch(e){window.toast&&toast(e.message||'Could not save finalists.')}
+    };
+  }
+  const obs=new MutationObserver(()=>{
+    const admin=document.getElementById('admin');
+    const controls=document.getElementById('controls');
+    if(admin&&admin.style.display!=='none'&&controls) setTimeout(renderFinalistEditor,0);
+  });
+  obs.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['style']});
+  window.addEventListener('load',()=>setTimeout(renderFinalistEditor,300));
+  window.__sumRound2SetApps=a=>{window.__sumAdminApps=Array.isArray(a)?a:[];renderFinalistEditor()};
+})();
+</script>'''
+            s=s.replace('</body>',patch+'</body>')
+            p.write_text(s)
           PY
-      - name: Commit
+      - name: Commit patched site
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add index.html
           git diff --cached --quiet && exit 0
-          git commit -m "Restore editable Round 2 finalist setup"
+          git commit -m "Add working editable Round 2 finalist editor"
           git push
